@@ -578,14 +578,12 @@ endif()
 
 if (CMAKE_BUILD_TYPE STREQUAL "Debug")
   if (NOT Sanitizers_FOUND)
-    message (FATAL_ERROR "Sanitizers are required for debug mode!")
+    message (WARNING "Sanitizers are required for debug mode!")
   endif ()
 endif ()
 
 target_link_libraries (seastar
   PUBLIC
-    debug Sanitizers::address
-    debug Sanitizers::undefined_behavior
     Boost::boost
     Boost::program_options
     Boost::thread
@@ -603,6 +601,13 @@ target_link_libraries (seastar
     protobuf::libprotobuf
     rt::rt
     yaml-cpp::yaml-cpp)
+
+if (Sanitizers_FOUND)
+  target_link_libraries (seastar
+    PUBLIC
+      debug Sanitizers::address
+      debug Sanitizers::undefined_behavior)
+endif()
 
 #
 # We want asserts enabled on all modes, but cmake defaults to passing
