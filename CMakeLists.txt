@@ -572,6 +572,7 @@ target_link_libraries (seastar
     cryptopp::cryptopp
     fmt::fmt
     lz4::lz4
+    pthread
   PRIVATE
     ${CMAKE_DL_LIBS}
     Boost::filesystem
