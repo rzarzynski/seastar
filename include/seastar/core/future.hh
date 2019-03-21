@@ -1347,7 +1347,7 @@ void promise<T...>::abandoned() noexcept {
         assert(_state && !_state->available());
         // Encourage the compiler to move this away from the hot paths. __builtin_expect is not enough
         // to do that. Cold lambdas work (at least for GCC8+).
-        [&] () __attribute__((cold)) {
+        [&] () {
             try {
                 // Constructing broken_promise may throw (std::logic_error ctor is not noexcept).
                 set_exception(broken_promise{});
