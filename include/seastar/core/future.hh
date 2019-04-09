@@ -442,9 +442,12 @@ void set_callback(future<T...>& fut, std::unique_ptr<U> callback);
 ///
 template <typename... T>
 class promise {
+    future_state<T...> _local_state;
+    static_assert(alignof(_local_state) == 0,
+                  "_local_state must be first due to future::maybe_get_promise");
+
     enum class urgent { no, yes };
     future<T...>* _future = nullptr;
-    future_state<T...> _local_state;
     future_state<T...>* _state;
     std::unique_ptr<task> _task;
     static constexpr bool copy_noexcept = future_state<T...>::copy_noexcept;
@@ -745,57 +748,68 @@ concept bool ApplyReturnsAnyFuture = requires (Func f, T... args) {
 /// available.  Only one such continuation may be scheduled.
 template <typename... T>
 class future {
-    promise<T...>* _promise;
-    future_state<T...> _local_state;  // valid if !_promise
+    future_state<T...> _local_state;  // valid if _state != &_local_state
+    future_state<T...>* _state;
     static constexpr bool copy_noexcept = future_state<T...>::copy_noexcept;
 private:
-    future(promise<T...>* pr) noexcept : _promise(pr) {
-        _promise->_future = this;
+    future(promise<T...>* pr) noexcept : _state(pr->_state) {
+        pr->_future = this;
     }
     template <typename... A>
-    future(ready_future_marker, A&&... a) : _promise(nullptr) {
+    future(ready_future_marker, A&&... a) : _state(&_local_state) {
         _local_state.set(std::forward<A>(a)...);
     }
     template <typename... A>
-    future(ready_future_from_tuple_marker, std::tuple<A...>&& data) : _promise(nullptr) {
+    future(ready_future_from_tuple_marker, std::tuple<A...>&& data) : _state(&_local_state) {
         _local_state.set(std::move(data));
     }
-    future(exception_future_marker, std::exception_ptr ex) noexcept : _promise(nullptr) {
+    future(exception_future_marker, std::exception_ptr ex) noexcept : _state(&_local_state) {
         _local_state.set_exception(std::move(ex));
     }
     [[gnu::always_inline]]
     explicit future(future_state<T...>&& state) noexcept
-            : _promise(nullptr), _local_state(std::move(state)) {
+            : _local_state(std::move(state)), _state(&_local_state) {
     }
     [[gnu::always_inline]]
     future_state<T...>* state() noexcept {
-        return _promise ? _promise->_state : &_local_state;
+        return _state;
     }
     [[gnu::always_inline]]
     const future_state<T...>* state() const noexcept {
-        return _promise ? _promise->_state : &_local_state;
+        return _state;
+    }
+    [[gnu::always_inline]]
+    bool is_remote_state() const {
+        // BE CAREFUL: remote state can be stored either in promise or continuation!
+        return _state != &_local_state;
+    }
+    [[gnu::always_inline]]
+    promise<T...>* maybe_get_promise() {
+        auto* const pr = reinterpret_cast<promise<T...>*>(_state);
+        return pr;
     }
     template <typename Func>
     void schedule(Func&& func) {
-        if (state()->available() || !_promise) {
-            if (__builtin_expect(!state()->available() && !_promise, false)) {
+        if (state()->available() || !is_remote_state()) {
+            if (__builtin_expect(!state()->available() && !is_remote_state(), false)) {
                 abandoned();
             }
             ::seastar::schedule(std::make_unique<continuation<Func, T...>>(std::move(func), std::move(*state())));
         } else {
-            assert(_promise);
-            _promise->schedule(std::move(func));
-            _promise->_future = nullptr;
-            _promise = nullptr;
+            assert(is_remote_state());
+            auto* const pr = maybe_get_promise();
+            pr->schedule(std::move(func));
+            pr->_future = nullptr;
+            _state = &_local_state;
         }
     }
 
     [[gnu::always_inline]]
     future_state<T...> get_available_state() noexcept {
         auto st = state();
-        if (_promise) {
-            _promise->_future = nullptr;
-            _promise = nullptr;
+        if (is_remote_state()) {
+            maybe_get_promise()->_future = nullptr;
+            _state = &_local_state;
         }
         return std::move(*st);
     }
@@ -843,14 +857,14 @@ public:
     using promise_type = promise<T...>;
     /// \brief Moves the future into a new object.
     [[gnu::always_inline]]
-    future(future&& x) noexcept : _promise(x._promise) {
-        if (!_promise) {
+    future(future&& x) noexcept : _state(x._state) {
+        if (!x.is_remote_state()) {
             _local_state = std::move(x._local_state);
+            _state = &_local_state;
+        } else {
+            maybe_get_promise()->_future = this;
         }
-        x._promise = nullptr;
-        if (_promise) {
-            _promise->_future = this;
-        }
+        x._state = &x._local_state;
     }
     future(const future&) = delete;
     future& operator=(future&& x) noexcept {
@@ -863,10 +877,21 @@ public:
     void operator=(const future&) = delete;
     __attribute__((always_inline))
     ~future() {
-        if (_promise) {
-            _promise->_future = nullptr;
+        // the actual future_state can be held by future, promise
+        // or continuation_base. Basing solely on _state we can't
+        // discriminate between promise and continuation. However,
+        // we don't need to do that as instantiating continuation
+        // breaks the bond between future and remote future_state.
+        // There is no business in calling .then() twice. Because
+        // of that e.g. future::schedule() sets the _state member
+        // to point on _local_state.
+        if (is_remote_state()) {
+            // we're pointing to remote future_state that resides
+            // in promise. This can happen when nobody has called
+            // future::schedule().
+            maybe_get_promise()->_future = nullptr;
         }
-        if (failed()) {
+        if (failed(), false) {
             report_failed_future(state()->get_exception());
         }
     }
@@ -932,16 +957,17 @@ private:
         }
     };
     void do_wait() noexcept {
-        if (__builtin_expect(!_promise, false)) {
+        if (__builtin_expect(!is_remote_state(), false)) {
             abandoned();
             return;
         }
         auto thread = thread_impl::get();
         assert(thread);
         thread_wake_task wake_task{thread, this};
-        _promise->schedule(std::unique_ptr<continuation_base<T...>>(&wake_task));
-        _promise->_future = nullptr;
-        _promise = nullptr;
+        auto* const pr = maybe_get_promise();
+        pr->schedule(std::unique_ptr<continuation_base<T...>>(&wake_task));
+        pr->_future = nullptr;
+        _state = &_local_state;
         thread_impl::switch_out(thread);
     }
 
@@ -1092,9 +1118,9 @@ public:
         if (state()->available()) {
             state()->forward_to(pr);
         } else {
-            _promise->_future = nullptr;
-            *_promise = std::move(pr);
-            _promise = nullptr;
+            maybe_get_promise()->_future = nullptr;
+            *maybe_get_promise() = std::move(pr);
+            _state = &_local_state;
         }
     }
 
@@ -1257,10 +1283,11 @@ public:
 #if SEASTAR_COROUTINES_TS
     void set_coroutine(task& coroutine) noexcept {
         assert(!state()->available());
-        assert(_promise);
-        _promise->set_coroutine(_local_state, coroutine);
-        _promise->_future = nullptr;
-        _promise = nullptr;
+        assert(is_remote_state());
+        auto* const pr = maybe_get_promise();
+        pr->set_coroutine(_local_state, coroutine);
+        pr->_future = nullptr;
+        _state = &_local_state;
     }
 #endif
 private:
@@ -1269,10 +1296,11 @@ private:
             callback->set_state(get_available_state());
             ::seastar::schedule(std::move(callback));
         } else {
-            assert(_promise);
-            _promise->schedule(std::move(callback));
-            _promise->_future = nullptr;
-            _promise = nullptr;
+            assert(is_remote_state());
+            auto* const pr = maybe_get_promise();
+            pr->schedule(std::move(callback));
+            pr->_future = nullptr;
+            _state = &_local_state;
         }
 
     }
@@ -1329,7 +1357,7 @@ template <typename... T>
 inline
 void promise<T...>::migrated() noexcept {
     if (_future) {
-        _future->_promise = this;
+        _future->_state = this->_state;
     }
 }
 
@@ -1340,7 +1368,7 @@ void promise<T...>::abandoned() noexcept {
         assert(_state);
         assert(_state->available() || !_task);
         _future->_local_state = std::move(*_state);
-        _future->_promise = nullptr;
+        _future->_state = &_future->_local_state;
     } else if (_state && _state->failed()) {
         report_failed_future(_state->get_exception());
     } else if (__builtin_expect(bool(_task), false)) {
