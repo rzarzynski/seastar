@@ -145,10 +145,10 @@ struct future_state {
     static_assert(std::is_nothrow_move_constructible<std::exception_ptr>::value,
                   "std::exception_ptr's move constructor must not throw");
     enum class state {
-         invalid,
-         future,
-         result,
-         exception,
+         invalid = 0,
+         future = 1,
+         result = 2,
+         exception = 3,
     } _state = state::future;
     union any {
         any() {}
@@ -160,38 +160,30 @@ struct future_state {
     [[gnu::always_inline]]
     future_state(future_state&& x) noexcept
             : _state(x._state) {
-        switch (_state) {
-        case state::future:
-            break;
-        case state::result:
-            new (&_u.value) std::tuple<T...>(std::move(x._u.value));
-            x._u.value.~tuple();
-            break;
-        case state::exception:
+        if (__builtin_expect(_state < state::exception, true)) {
+            // for trivially destructiable types the entire check will
+            // be ellided, I expect
+            if (_state == state::result) {
+                new (&_u.value) std::tuple<T...>(std::move(x._u.value));
+                x._u.value.~tuple();
+            }
+        } else if (_state == state::exception) {
             new (&_u.ex) std::exception_ptr(std::move(x._u.ex));
             x._u.ex.~exception_ptr();
-            break;
-        case state::invalid:
-            break;
-        default:
+        } else {
             abort();
         }
         x._state = state::invalid;
     }
     __attribute__((always_inline))
     ~future_state() noexcept {
-        switch (_state) {
-        case state::invalid:
-            break;
-        case state::future:
-            break;
-        case state::result:
-            _u.value.~tuple();
-            break;
-        case state::exception:
+        if (__builtin_expect(_state < state::exception, true)) {
+            if (_state == state::result) {
+                _u.value.~tuple();
+            }
+        } else if (_state == state::exception) {
             _u.ex.~exception_ptr();
-            break;
-        default:
+        } else {
             abort();
         }
     }
@@ -314,7 +306,7 @@ struct future_state<> {
     future_state() noexcept {}
     [[gnu::always_inline]]
     future_state(future_state&& x) noexcept {
-        if (x._u.st < state::exception_min) {
+        if (__builtin_expect(x._u.st < state::exception_min, true)) {
             _u.st = x._u.st;
         } else {
             // Move ex out so future::~future() knows we've handled it
@@ -326,7 +318,7 @@ struct future_state<> {
     }
     [[gnu::always_inline]]
     ~future_state() noexcept {
-        if (_u.st >= state::exception_min) {
+        if (__builtin_expect(_u.st >= state::exception_min, false)) {
             _u.ex.~exception_ptr();
         }
     }
