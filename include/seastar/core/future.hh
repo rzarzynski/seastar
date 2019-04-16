@@ -1335,7 +1335,7 @@ void promise<T...>::make_ready() noexcept {
     if (_task) {
         _state = nullptr;
         if (Urgent == urgent::yes && !need_preempt()) {
-            ::seastar::schedule_urgent(std::move(_task));
+            _task.release()->run_and_dispose();
         } else {
             ::seastar::schedule(std::move(_task));
         }
