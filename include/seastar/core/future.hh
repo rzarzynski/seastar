@@ -266,6 +266,18 @@ struct future_state {
     static get0_return_type get0(std::tuple<T...>&& x) {
         return std::get<0>(std::move(x));
     }
+    template <class Func, class... FuncArgs>
+    void forward_to_continuation(promise<T...>&& pr) noexcept {
+        assert(_state != state::future);
+        if (_state == state::exception) {
+            pr.set_urgent_exception(std::move(_u.ex));
+            _u.ex.~exception_ptr();
+        } else {
+            pr.template continue_from<Func, FuncArgs...>(std::move(_u.value));
+            _u.value.~tuple();
+        }
+        _state = state::invalid;
+    }
     void forward_to(promise<T...>& pr) noexcept {
         assert(_state != state::future);
         if (_state == state::exception) {
@@ -387,6 +399,8 @@ struct future_state<> {
         assert(_u.st == state::result);
         return {};
     }
+    template <class Func, class... FuncArgs>
+    void forward_to_continuation(promise<>&& pr) noexcept;
     void forward_to(promise<>& pr) noexcept;
 };
 
@@ -535,6 +549,23 @@ private:
         _state->set(std::move(result));
         make_ready<Urgent>();
     }
+
+    template <typename Func, typename... FuncArgs>
+    void continue_from(const std::tuple<T...>& result) noexcept(copy_noexcept) {
+        assert(_state);
+        _state->set(result);
+        if (_task) {
+            _state = nullptr;
+            if (!need_preempt()) {
+                ::seastar::schedule_urgent(std::move(_task));
+            } else {
+                ::seastar::schedule(std::move(_task));
+            }
+        }
+    }
+
+    template <typename Func, typename... FuncArgs>
+    void continue_from(std::tuple<T...>&& result) noexcept;
 
     void set_urgent_value(const std::tuple<T...>& result) noexcept(copy_noexcept) {
         do_set_value<urgent::yes>(result);
@@ -718,6 +749,21 @@ concept bool ApplyReturnsAnyFuture = requires (Func f, T... args) {
 };
 
 )
+
+template <typename Func, typename... T>
+struct inlineable_continuation { // : final continuation_base<T...> {
+    using futurator = futurize<std::result_of_t<Func(T...)>>;
+
+    typename futurator::promise_type pr;
+    Func func;
+    void operator() (future_state<T...>&& state) {
+        if (state.failed()) {
+            pr.set_exception(std::move(state).get_exception());
+        } else {
+            futurator::apply(std::move(func), std::move(state).get_value()).template forward_to_continuation<Func, T...>(std::move(pr));
+        }
+  }
+};
 
 /// \addtogroup future-module
 /// @{
@@ -1026,6 +1072,7 @@ private:
         // that happens.
         [&] () noexcept {
             memory::disable_failure_guard dfg;
+#if 0
             schedule([pr = std::move(pr), func = std::forward<Func>(func)] (auto&& state) mutable {
                 if (state.failed()) {
                     pr.set_exception(std::move(state).get_exception());
@@ -1033,6 +1080,9 @@ private:
                     futurator::apply(std::forward<Func>(func), std::move(state).get_value()).forward_to(std::move(pr));
                 }
             });
+#else
+            schedule(inlineable_continuation<Func, T...>{std::move(pr), std::forward<Func>(func)});
+#endif
         } ();
         return fut;
     }
@@ -1090,6 +1140,19 @@ private:
             abort();
         }
         return fut;
+    }
+
+// FIXME: encapsulate
+public:
+    template <class Func, class... FuncArgs>
+    void forward_to_continuation(promise<T...>&& pr) noexcept {
+        if (state()->available()) {
+            state()->template forward_to_continuation<Func, FuncArgs...>(std::move(pr));
+        } else {
+            maybe_get_promise()->_future = nullptr;
+            *maybe_get_promise() = std::move(pr);
+            _state = &_local_state;
+        }
     }
 
 public:
@@ -1336,6 +1399,23 @@ void promise<T...>::make_ready() noexcept {
         _state = nullptr;
         if (Urgent == urgent::yes && !need_preempt()) {
             _task.release()->run_and_dispose();
+        } else {
+            ::seastar::schedule(std::move(_task));
+        }
+    }
+}
+
+template <typename... T>
+template <typename Func, typename... FuncArgs>
+inline
+void promise<T...>::continue_from(std::tuple<T...>&& result) noexcept {
+    assert(_state);
+    _state->set(std::move(result));
+    if (_task) {
+        _state = nullptr;
+        if (!need_preempt()) {
+            // Won't work. We don't have the necessary about where to fordward **to**.
+            static_cast<continuation<inlineable_continuation<Func, FuncArgs...>, FuncArgs...>*>(_task.release())->run_and_dispose();
         } else {
             ::seastar::schedule(std::move(_task));
         }
