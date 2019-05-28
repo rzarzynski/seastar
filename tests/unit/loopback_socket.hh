@@ -151,7 +151,7 @@ public:
     loopback_connected_socket_impl(foreign_ptr<lw_shared_ptr<loopback_buffer>> tx, lw_shared_ptr<loopback_buffer> rx)
             : _tx(std::move(tx)), _rx(std::move(rx)) {
     }
-    data_source source() override {
+    data_source source(net::input_buffer_factory*) override {
         return data_source(std::make_unique<loopback_data_source_impl>(_rx));
     }
     data_sink sink() override {
