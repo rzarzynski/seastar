@@ -106,11 +106,11 @@ class posix_data_source_impl final : public data_source_impl {
     compat::polymorphic_allocator<char>* _buffer_allocator;
     lw_shared_ptr<pollable_fd> _fd;
     temporary_buffer<char> _buf;
-    size_t _buf_size;
+    net::inbuf_size_estimator* _buffer_size_estimator;
 public:
-    explicit posix_data_source_impl(lw_shared_ptr<pollable_fd> fd, compat::polymorphic_allocator<char>* allocator=memory::malloc_allocator,
-        size_t buf_size = 8192) : _buffer_allocator(allocator), _fd(std::move(fd)),
-        _buf(make_temporary_buffer<char>(_buffer_allocator, buf_size)), _buf_size(buf_size) {}
+    explicit posix_data_source_impl(lw_shared_ptr<pollable_fd> fd, net::inbuf_size_estimator* ise, compat::polymorphic_allocator<char>* allocator=memory::malloc_allocator)
+        : _buffer_allocator(allocator), _fd(std::move(fd)),
+        _buf(make_temporary_buffer<char>(_buffer_allocator, ise->estimate())), _buffer_size_estimator(ise) {}
     future<temporary_buffer<char>> get() override;
     future<> close() override;
 };

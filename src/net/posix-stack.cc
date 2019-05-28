@@ -116,8 +116,8 @@ private:
     explicit posix_connected_socket_impl(lw_shared_ptr<pollable_fd> fd, conntrack::handle&& handle,
         compat::polymorphic_allocator<char>* allocator=memory::malloc_allocator) : _fd(std::move(fd)), _handle(std::move(handle)), _allocator(allocator) {}
 public:
-    virtual data_source source() override {
-        return data_source(std::make_unique< posix_data_source_impl>(_fd, _allocator));
+    virtual data_source source(net::inbuf_size_estimator* ise) override {
+        return data_source(std::make_unique< posix_data_source_impl>(_fd, ise, _allocator));
     }
     virtual data_sink sink() override {
         return data_sink(std::make_unique< posix_data_sink_impl>(_fd));
@@ -317,10 +317,10 @@ posix_ap_server_socket_impl<Transport>::move_connected_socket(socket_address sa,
 
 future<temporary_buffer<char>>
 posix_data_source_impl::get() {
-    return _fd->read_some(_buf.get_write(), _buf_size).then([this] (size_t size) {
+    return _fd->read_some(_buf.get_write(), _buffer_size_estimator->estimate()).then([this] (size_t size) {
         _buf.trim(size);
         auto ret = std::move(_buf);
-        _buf = make_temporary_buffer<char>(_buffer_allocator, _buf_size);
+        _buf = make_temporary_buffer<char>(_buffer_allocator, _buffer_size_estimator->estimate());
         return make_ready_future<temporary_buffer<char>>(std::move(ret));
     });
 }

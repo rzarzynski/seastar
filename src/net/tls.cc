@@ -1050,7 +1050,7 @@ public:
     class source_impl;
     class sink_impl;
 
-    data_source source() override;
+    data_source source(net::inbuf_size_estimator*) override;
     data_sink sink() override;
 
     void shutdown_input() override {
@@ -1160,7 +1160,7 @@ public:
 
 }
 
-data_source tls::tls_connected_socket_impl::source() {
+data_source tls::tls_connected_socket_impl::source(net::inbuf_size_estimator*) {
     return data_source(std::make_unique<source_impl>(_session));
 }
 

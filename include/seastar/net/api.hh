@@ -129,6 +129,19 @@ public:
     void close();
 };
 
+// XXX: posix_stack is already aware about the allocator concept.
+// Unfortunately, it 1) operates on per-stack basis, 2) is driven
+// by `posix_data_source_impl::_buf_size`.
+// Maybe turn this into a buffer factory concept?
+class inbuf_size_estimator {
+public:
+  virtual ~inbuf_size_estimator() = default;
+
+  virtual std::size_t estimate() /* non-const */ {
+    return 8192; // XXX
+  }
+};
+
 } /* namespace net */
 
 /// \addtogroup networking-module
@@ -156,7 +169,7 @@ public:
     /// Gets the input stream.
     ///
     /// Gets an object returning data sent from the remote endpoint.
-    input_stream<char> input();
+    input_stream<char> input(net::inbuf_size_estimator* ise = nullptr);
     /// Gets the output stream.
     ///
     /// Gets an object that sends data to the remote endpoint.
