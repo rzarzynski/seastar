@@ -317,10 +317,13 @@ posix_ap_server_socket_impl<Transport>::move_connected_socket(socket_address sa,
 
 future<temporary_buffer<char>>
 posix_data_source_impl::get() {
-    return _fd->read_some(_buf.get_write(), _buffer_size_estimator->estimate()).then([this] (size_t size) {
+    _buf = make_temporary_buffer<char>(_buffer_allocator, _buffer_size_estimator->estimate());
+    return _fd->read_some(_buf.get_write(), _buf.size()).then([this] (size_t size) {
+        // XXX: if the next v2 frame's prologue isn't available yet, size will be
+        // smaller than the estimation and extra get() would be necessary. I hope
+        // this won't the typical case.
         _buf.trim(size);
         auto ret = std::move(_buf);
-        _buf = make_temporary_buffer<char>(_buffer_allocator, _buffer_size_estimator->estimate());
         return make_ready_future<temporary_buffer<char>>(std::move(ret));
     });
 }
