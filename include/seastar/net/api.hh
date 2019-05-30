@@ -133,12 +133,20 @@ public:
 // Unfortunately, it 1) operates on per-stack basis, 2) is driven
 // by `posix_data_source_impl::_buf_size`.
 // Maybe turn this into a buffer factory concept?
-class inbuf_size_estimator {
+class input_buffer_factory {
 public:
-  virtual ~inbuf_size_estimator() = default;
+  virtual ~input_buffer_factory() = default;
 
-  virtual std::size_t estimate() /* non-const */ {
+  std::size_t estimate() /* non-const */ {
     return 8192; // XXX
+  }
+
+  virtual temporary_buffer<char> create(compat::polymorphic_allocator<char>* allocator) {
+#if 0
+    return make_temporary_buffer<char>(_buffer_allocator, estimate());
+#else
+    return {};
+#endif
   }
 };
 
@@ -169,7 +177,7 @@ public:
     /// Gets the input stream.
     ///
     /// Gets an object returning data sent from the remote endpoint.
-    input_stream<char> input(net::inbuf_size_estimator* ise = nullptr);
+    input_stream<char> input(net::input_buffer_factory* ibf = nullptr);
     /// Gets the output stream.
     ///
     /// Gets an object that sends data to the remote endpoint.

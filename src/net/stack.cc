@@ -84,7 +84,7 @@ connected_socket& connected_socket::operator=(connected_socket&& cs) noexcept = 
 connected_socket::~connected_socket()
 {}
 
-input_stream<char> connected_socket::input(net::inbuf_size_estimator* const ise) {
+input_stream<char> connected_socket::input(net::input_buffer_factory* const ise) {
     return input_stream<char>(_csi->source(ise));
 }
 

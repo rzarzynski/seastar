@@ -116,8 +116,16 @@ private:
     explicit posix_connected_socket_impl(lw_shared_ptr<pollable_fd> fd, conntrack::handle&& handle,
         compat::polymorphic_allocator<char>* allocator=memory::malloc_allocator) : _fd(std::move(fd)), _handle(std::move(handle)), _allocator(allocator) {}
 public:
-    virtual data_source source(net::inbuf_size_estimator* ise) override {
-        return data_source(std::make_unique< posix_data_source_impl>(_fd, ise, _allocator));
+    virtual data_source source(net::input_buffer_factory* ibf) override {
+        if (!ibf) {
+            static struct : input_buffer_factory {
+               temporary_buffer<char> create(compat::polymorphic_allocator<char>* const allocator) override {
+                    return make_temporary_buffer<char>(allocator, 8192);
+                }
+            } default_posix_inbuf_factory{};
+            ibf = &default_posix_inbuf_factory;
+        }
+        return data_source(std::make_unique<posix_data_source_impl>(_fd, ibf, _allocator));
     }
     virtual data_sink sink() override {
         return data_sink(std::make_unique< posix_data_sink_impl>(_fd));
@@ -317,7 +325,7 @@ posix_ap_server_socket_impl<Transport>::move_connected_socket(socket_address sa,
 
 future<temporary_buffer<char>>
 posix_data_source_impl::get() {
-    _buf = make_temporary_buffer<char>(_buffer_allocator, _buffer_size_estimator->estimate());
+    _buf = _buffer_factory->create(_buffer_allocator);
     return _fd->read_some(_buf.get_write(), _buf.size()).then([this] (size_t size) {
         // XXX: if the next v2 frame's prologue isn't available yet, size will be
         // smaller than the estimation and extra get() would be necessary. I hope
