@@ -119,8 +119,10 @@ public:
     virtual data_source source(net::input_buffer_factory* ibf) override {
         if (!ibf) {
             static struct final : input_buffer_factory {
-               temporary_buffer<char> create(compat::polymorphic_allocator<char>* const allocator) override {
+                buffer_t create(compat::polymorphic_allocator<char>* const allocator) override {
                     return make_temporary_buffer<char>(allocator, 8192);
+                }
+                void return_unused(buffer_t&&) override {
                 }
             } default_posix_inbuf_factory{};
             ibf = &default_posix_inbuf_factory;
@@ -327,9 +329,11 @@ future<temporary_buffer<char>>
 posix_data_source_impl::get() {
     _buf = _buffer_factory->create(_buffer_allocator);
     return _fd->read_some(_buf.get_write(), _buf.size()).then([this] (size_t size) {
-        _buf.trim(size);
-        auto ret = std::move(_buf);
-        return make_ready_future<temporary_buffer<char>>(std::move(ret));
+        if (size < _buf.size()) {
+          _buffer_factory->return_unused(_buf.share(size, _buf.size() - size));
+          _buf.trim(size);
+        }
+        return make_ready_future<temporary_buffer<char>>(std::move(_buf));
     });
 }
 
