@@ -131,13 +131,19 @@ public:
 
 class input_buffer_factory {
 public:
+  using buffer_t = temporary_buffer<char>;
+
   virtual ~input_buffer_factory() = default;
   /// Provide a rx buffer. Implementation is responsible for determining its size
   /// and memory. This is useful when a network stack implementation does not put
   /// extra requirements on these factors. The POSIX stack is the example here.
   /// \param allocator Memory allocator \c connected_socket implementation prefers.
   /// Maybe nullptr.
-  virtual temporary_buffer<char> create(compat::polymorphic_allocator<char>* allocator) = 0;
+  virtual buffer_t create(compat::polymorphic_allocator<char>* allocator) = 0;
+
+  /// Give back to the factory unused part of a buffer obtained from it
+  // XXX: consider unifying with create() to save extra virtual overhead/indirect call
+  virtual void return_unused(buffer_t&& buf) = 0;
 };
 
 } /* namespace net */
