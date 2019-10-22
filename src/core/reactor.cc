@@ -5854,7 +5854,7 @@ void report_failed_future(const std::exception_ptr& eptr) noexcept {
 broken_promise::broken_promise() : logic_error("broken promise") { }
 
 promise_base::promise_base(promise_base&& x) noexcept
-    : _state_tracker(std::move(x._state_tracker)), _task(std::move(x._task)) {
+    : _state_tracker(std::move(x._state_tracker)) {
     x._state_tracker.clear();
     if (auto* fut = _state_tracker.get_dependent_future(); fut) {
         fut->detach_promise();
@@ -5864,13 +5864,13 @@ promise_base::promise_base(promise_base&& x) noexcept
 
 promise_base::~promise_base() noexcept {
     if (auto* future = _state_tracker.get_dependent_future(); future) {
-        assert(_state_tracker.get_state()->available() || !_task);
+        assert(_state_tracker.get_state()->available());
         future->detach_promise();
-    } else if (__builtin_expect(bool(_task), false)) {
+    } else if (auto task = _state_tracker.release_dependent_task(); __builtin_expect(bool(task), false)) {
         auto* state = _state_tracker.get_state();
         assert(state && !state->available());
         state->set_to_broken_promise();
-        ::seastar::schedule(std::move(_task));
+        ::seastar::schedule(std::move(task));
     }
 }
 

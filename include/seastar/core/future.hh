@@ -444,8 +444,8 @@ class stateptr_t {
   enum class location : uintptr_t {
     promise = 0,
     future = 1,
-    continuation = 2 // not for SEASTAR_COROUTINES_TS it looks
-    // crimson has this disabled.
+    continuation = 2 // not for SEASTAR_COROUTINES_TS but it looks that,
+    // at least for crimson, this is disabled.
   };
   static constexpr uintptr_t location_mask = 0x3;
   static constexpr uintptr_t state_mask = ~location_mask;
@@ -466,14 +466,31 @@ public:
       reinterpret_cast<uintptr_t>(&fut._state) | static_cast<uintptr_t>(location::future);
   }
   template <class... T>
-  stateptr_t(class continuation_base<T...>& cont) {
+  stateptr_t(class std::unique_ptr<continuation_base<T...>> cont) {
     _state_and_location = \
-      reinterpret_cast<uintptr_t>(&cont._state) | static_cast<uintptr_t>(location::continuation);
+      reinterpret_cast<uintptr_t>(&cont.release()->_state) | static_cast<uintptr_t>(location::continuation);
+  }
+
+  stateptr_t(const stateptr_t&) = delete;
+  stateptr_t(stateptr_t&& other) {
+    _state_and_location = other._state_and_location;
+    other.clear();
+  }
+  void operator=(stateptr_t&& other) {
+    _state_and_location = other._state_and_location;
+    other.clear();
+  }
+
+  ~stateptr_t() {
+    if (_state_and_location & static_cast<uintptr_t>(location::continuation)) {
+      delete reinterpret_cast<task*>(_state_and_location & state_mask);
+    }
   }
 
   future_state_base* get_state() {
     return reinterpret_cast<future_state_base*>(_state_and_location & state_mask);
   }
+
   template <class... T>
   future_base* get_dependent_future() {
     future_base* ret = nullptr;
@@ -481,6 +498,13 @@ public:
       ret = reinterpret_cast<future_base*>((_state_and_location & state_mask) - offsetof(future<>, _state));
     }
     return ret;
+  }
+
+  std::unique_ptr<task> release_dependent_task() {
+    // FIXME: offsetof() on continuation_base<>
+    return std::unique_ptr<task>{_state_and_location & static_cast<uintptr_t>(location::continuation) ?
+      reinterpret_cast<task*>((std::exchange(_state_and_location, 0) & state_mask) - offsetof(continuation_base<>, _state)) : nullptr
+    };
   }
 
   void clear() {
@@ -498,8 +522,6 @@ protected:
     // actually stored allowing to derive corresponding future without
     // extra pointer.
     stateptr_t _state_tracker;
-
-    std::unique_ptr<task> _task;
 
     promise_base(const promise_base&) = delete;
     promise_base(stateptr_t&& state_tracker) noexcept;
@@ -593,13 +615,11 @@ public:
 private:
     template <typename Func>
     void schedule(Func&& func) {
-        auto tws = std::make_unique<continuation<Func, T...>>(std::move(func));
-        _state_tracker = stateptr_t{*tws};
-        _task = std::move(tws);
+        auto tws = std::unique_ptr<continuation_base<T...>>(new continuation<Func, T...>(std::move(func)));
+        _state_tracker = stateptr_t{std::move(tws)};
     }
     void schedule(std::unique_ptr<continuation_base<T...>> callback) {
-        _state_tracker = stateptr_t{*callback};
-        _task = std::move(callback);
+        _state_tracker = stateptr_t{std::move(callback)};
     }
 
     template <typename... U>
@@ -1428,19 +1448,18 @@ template <typename... T>
 inline
 future<T...>
 promise<T...>::get_future() noexcept {
-    assert(!this->_state_tracker.get_dependent_future() && this->_state_tracker.get_state() && !this->_task);
+    assert(!this->_state_tracker.get_dependent_future() && this->_state_tracker.get_state());
     return future<T...>(this);
 }
 
 template<internal::promise_base::urgent Urgent>
 inline
 void internal::promise_base::make_ready() noexcept {
-    if (_task) {
-        _state_tracker.clear();
+    if (auto task = _state_tracker.release_dependent_task(); task) {
         if (Urgent == urgent::yes && !need_preempt()) {
-            ::seastar::schedule_urgent(std::move(_task));
+            ::seastar::schedule_urgent(std::move(task));
         } else {
-            ::seastar::schedule(std::move(_task));
+            ::seastar::schedule(std::move(task));
         }
     }
 }
