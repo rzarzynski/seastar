@@ -526,6 +526,7 @@ public:
         }
       }
     };
+
 class promise_base {
 protected:
     enum class urgent { no, yes };
@@ -539,6 +540,7 @@ protected:
 
     promise_base(const promise_base&) = delete;
     promise_base(stateptr_t&& state_tracker) noexcept;
+    promise_base(future_base&, stateptr_t&& state_tracker) noexcept;
     promise_base(promise_base&& x) noexcept;
 
     // We never need to destruct this polymorphicly, so we can make it
@@ -595,6 +597,7 @@ protected:
     }
     static constexpr bool copy_noexcept = future_state<T...>::copy_noexcept;
 public:
+    promise_base_with_type(future_base& fut, stateptr_t&& state_tracker) noexcept : promise_base(fut, std::move(state_tracker)) { }
     promise_base_with_type(stateptr_t&& state_tracker) noexcept : promise_base(std::move(state_tracker)) { }
     promise_base_with_type(promise_base_with_type&& x) noexcept : promise_base(std::move(x)) { }
     promise_base_with_type(const promise_base_with_type&) = delete;
@@ -952,7 +955,7 @@ private:
     }
     internal::promise_base_with_type<T...> get_promise() noexcept {
         assert(!_promise);
-        return internal::promise_base_with_type<T...>(internal::stateptr_t{*this});
+        return internal::promise_base_with_type<T...>(*this, internal::stateptr_t{*this});
     }
     internal::promise_base_with_type<T...>* detach_promise() {
         return static_cast<internal::promise_base_with_type<T...>*>(future_base::detach_promise());
@@ -1450,12 +1453,11 @@ private:
 
 inline internal::promise_base::promise_base(stateptr_t&& state_tracker) noexcept
     : _state_tracker(std::move(state_tracker)) {
-    // TODO: ensure compiler has optimized-out the conditional when
-    // calling the ctor for promise which imposes there couldn't be
-    // future.
-    if (_state_tracker.get_dependent_future()) {
-      _state_tracker.get_dependent_future()->_promise = this;
-    }
+}
+
+inline internal::promise_base::promise_base(future_base& fut, stateptr_t&& state_tracker) noexcept
+    : _state_tracker(std::move(state_tracker)) {
+      fut._promise = this;
 }
 
 template <typename... T>
