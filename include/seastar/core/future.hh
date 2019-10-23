@@ -400,6 +400,7 @@ static_assert(sizeof(future_state<long>) <= 16, "future_state<long> is too large
 
 namespace internal {
   class stateptr_t;
+  class taskable_stateptr_t;
 }
 
 template <typename... T>
@@ -418,6 +419,7 @@ public:
     friend class promise<T...>;
     friend class future<T...>;
     friend class internal::stateptr_t;
+    friend class internal::taskable_stateptr_t;
 };
 
 template <typename Func, typename... T>
@@ -440,7 +442,11 @@ class future_base;
 
 // Tagged pointer to track state and derive _future and maybe even
 // _task.
-class stateptr_t {
+struct stateptr_t {
+protected:
+  struct nopctor_t{};
+  stateptr_t(nopctor_t) {};
+public:
   enum class location : uintptr_t {
     promise = 0,
     future = 1,
@@ -465,27 +471,6 @@ public:
     _state_and_location = \
       reinterpret_cast<uintptr_t>(&fut._state) | static_cast<uintptr_t>(location::future);
   }
-  template <class... T>
-  stateptr_t(class std::unique_ptr<continuation_base<T...>> cont) {
-    _state_and_location = \
-      reinterpret_cast<uintptr_t>(&cont.release()->_state) | static_cast<uintptr_t>(location::continuation);
-  }
-
-  stateptr_t(const stateptr_t&) = delete;
-  stateptr_t(stateptr_t&& other) {
-    _state_and_location = other._state_and_location;
-    other.clear();
-  }
-  void operator=(stateptr_t&& other) {
-    _state_and_location = other._state_and_location;
-    other.clear();
-  }
-
-  ~stateptr_t() {
-    if (_state_and_location & static_cast<uintptr_t>(location::continuation)) {
-      delete reinterpret_cast<task*>(_state_and_location & state_mask);
-    }
-  }
 
   future_state_base* get_state() {
     return reinterpret_cast<future_state_base*>(_state_and_location & state_mask);
@@ -500,18 +485,47 @@ public:
     return ret;
   }
 
-  std::unique_ptr<task> release_dependent_task() {
-    // FIXME: offsetof() on continuation_base<>
-    return std::unique_ptr<task>{_state_and_location & static_cast<uintptr_t>(location::continuation) ?
-      reinterpret_cast<task*>((std::exchange(_state_and_location, 0) & state_mask) - offsetof(continuation_base<>, _state)) : nullptr
-    };
-  }
-
   void clear() {
     _state_and_location = 0;
   }
 };
 
+    struct taskable_stateptr_t : stateptr_t {
+      template <class... T>
+      taskable_stateptr_t(class std::unique_ptr<continuation_base<T...>> cont) : stateptr_t(nopctor_t{}) {
+        _state_and_location = \
+          reinterpret_cast<uintptr_t>(&cont.release()->_state) | static_cast<uintptr_t>(location::continuation);
+      }
+
+      taskable_stateptr_t(const taskable_stateptr_t&) = delete;
+      taskable_stateptr_t(taskable_stateptr_t&& other) : stateptr_t(nopctor_t{}) {
+        _state_and_location = other._state_and_location;
+        other.clear();
+      }
+      taskable_stateptr_t(stateptr_t&& other) : stateptr_t(nopctor_t{}) {
+        _state_and_location = other._state_and_location;
+      }
+      void operator=(stateptr_t&& other) {
+        _state_and_location = other._state_and_location;
+      }
+      void operator=(taskable_stateptr_t&& other) {
+        _state_and_location = other._state_and_location;
+        other.clear();
+      }
+
+      std::unique_ptr<task> release_dependent_task() {
+        // FIXME: offsetof() on continuation_base<>
+        return std::unique_ptr<task>{_state_and_location & static_cast<uintptr_t>(location::continuation) ?
+          reinterpret_cast<task*>((std::exchange(_state_and_location, 0) & state_mask) - offsetof(continuation_base<>, _state)) : nullptr
+        };
+      }
+
+      ~taskable_stateptr_t() {
+        if (_state_and_location & static_cast<uintptr_t>(location::continuation)) {
+          delete reinterpret_cast<task*>(_state_and_location & state_mask);
+        }
+      }
+    };
 class promise_base {
 protected:
     enum class urgent { no, yes };
@@ -521,7 +535,7 @@ protected:
     // details. It also holds the information where the state is
     // actually stored allowing to derive corresponding future without
     // extra pointer.
-    stateptr_t _state_tracker;
+    taskable_stateptr_t _state_tracker;
 
     promise_base(const promise_base&) = delete;
     promise_base(stateptr_t&& state_tracker) noexcept;
@@ -616,10 +630,10 @@ private:
     template <typename Func>
     void schedule(Func&& func) {
         auto tws = std::unique_ptr<continuation_base<T...>>(new continuation<Func, T...>(std::move(func)));
-        _state_tracker = stateptr_t{std::move(tws)};
+        _state_tracker = taskable_stateptr_t{std::move(tws)};
     }
     void schedule(std::unique_ptr<continuation_base<T...>> callback) {
-        _state_tracker = stateptr_t{std::move(callback)};
+        _state_tracker = taskable_stateptr_t{std::move(callback)};
     }
 
     template <typename... U>
