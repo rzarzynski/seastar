@@ -23,6 +23,7 @@
 
 #include <sys/syscall.h>
 #include <dirent.h>
+#include <linux/falloc.h>
 #include <linux/types.h> // for xfs, below
 #include <sys/ioctl.h>
 #include <xfs/linux.h>
