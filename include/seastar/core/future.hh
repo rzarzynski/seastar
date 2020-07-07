@@ -1629,6 +1629,7 @@ private:
         return then_wrapped_nrvo<FuncResult, Func>(std::forward<Func>(func));
     }
 
+protected:
     void forward_to(internal::promise_base_with_type<T...>&& pr) noexcept {
         if (_state.available()) {
             pr.set_urgent_state(std::move(_state));
